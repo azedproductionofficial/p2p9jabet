@@ -1,13 +1,3 @@
-const API_KEY = import.meta.env.VITE_RAPIDAPI_KEY
-const API_HOST = 'allsportsapi2.p.rapidapi.com'
-const BASE_URL = `https://${API_HOST}`
-
-const headers = {
-  'Content-Type': 'application/json',
-  'x-rapidapi-key': API_KEY || '',
-  'x-rapidapi-host': API_HOST,
-}
-
 // Tournament IDs for AllSportsApi
 // 17 = Premier League, 679 = NPFL, 8 = La Liga, 35 = Bundesliga, 23 = Serie A
 export const SUPPORTED_LEAGUES = [17, 8, 35, 23, 679]
@@ -24,11 +14,16 @@ export async function fetchUpcomingFixtures(tournamentId = 17) {
   const meta = LEAGUE_META[tournamentId]
   if (!meta) return []
 
+  // Call our own Netlify function to avoid CORS
   const res = await fetch(
-    `${BASE_URL}/api/tournament/${tournamentId}/season/${meta.season}/matches/next/0`,
-    { headers }
+    `/.netlify/functions/fixtures?tournamentId=${tournamentId}&season=${meta.season}`
   )
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Proxy error ${res.status}: ${text}`)
+  }
+
   const data = await res.json()
   return data.events || []
 }
