@@ -6,6 +6,7 @@ import Auth from './pages/Auth'
 import Lobby from './pages/Lobby'
 import Dashboard from './pages/Dashboard'
 import Wallet from './pages/Wallet'
+import Admin from './pages/Admin'
 import Navbar from './components/Navbar'
 
 function ProtectedRoute({ children }) {
@@ -28,6 +29,7 @@ function AppRoutes() {
         <Route path="/lobby" element={<Lobby />} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/wallet" element={<ProtectedRoute><Wallet /></ProtectedRoute>} />
+        <Route path="/p9jadmin2025" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
       </Routes>
     </>
   )
