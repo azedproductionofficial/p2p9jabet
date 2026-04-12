@@ -1,6 +1,6 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { Wallet, LogOut, LayoutDashboard, Swords } from 'lucide-react'
+import { Wallet, LogOut, LayoutDashboard, Swords, Shield } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function Navbar() {
@@ -38,7 +38,7 @@ export default function Navbar() {
             padding: '4px 10px',
             borderRadius: '4px',
           }}>P2P</div>
-          <span style={{ fontFamily: 'var(--font-display)', fontSize: '1.4rem', letterSpacing: '2px', color: 'var(--text)' }}>9JABET</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: '1.4rem', letterSpacing: '2px', color: 'var(--text)' }}>9JADUEL</span>
         </Link>
 
         {/* Nav links */}
@@ -47,6 +47,9 @@ export default function Navbar() {
             <NavLink to="/lobby" active={isActive('/lobby')} icon={<Swords size={15} />} label="Lobby" />
             <NavLink to="/dashboard" active={isActive('/dashboard')} icon={<LayoutDashboard size={15} />} label="My Bets" />
             <NavLink to="/wallet" active={isActive('/wallet')} icon={<Wallet size={15} />} label="Wallet" />
+            {profile?.is_admin && (
+              <NavLink to="/p9jadmin2025" active={isActive('/p9jadmin2025')} icon={<Shield size={15} />} label="Admin" color="var(--accent2)" />
+            )}
           </div>
         )}
 
@@ -82,20 +85,20 @@ export default function Navbar() {
   )
 }
 
-function NavLink({ to, active, icon, label }) {
+function NavLink({ to, active, icon, label, color }) {
   return (
     <Link to={to}>
       <button style={{
         display: 'flex', alignItems: 'center', gap: '6px',
         background: active ? 'var(--card2)' : 'transparent',
-        color: active ? 'var(--accent)' : 'var(--muted)',
+        color: active ? (color || 'var(--accent)') : (color || 'var(--muted)'),
         border: active ? '1px solid var(--border)' : '1px solid transparent',
         padding: '8px 14px', borderRadius: '8px', fontSize: '0.85rem',
         fontFamily: 'var(--font-body)', fontWeight: 600,
         cursor: 'pointer', transition: 'all 0.2s',
       }}
-        onMouseEnter={e => { if (!active) e.currentTarget.style.color = 'var(--text)' }}
-        onMouseLeave={e => { if (!active) e.currentTarget.style.color = 'var(--muted)' }}
+        onMouseEnter={e => { if (!active) e.currentTarget.style.color = color || 'var(--text)' }}
+        onMouseLeave={e => { if (!active) e.currentTarget.style.color = color || 'var(--muted)' }}
       >
         {icon}{label}
       </button>
