@@ -1,47 +1,56 @@
 const API_KEY = import.meta.env.VITE_RAPIDAPI_KEY
-const API_HOST = import.meta.env.VITE_RAPIDAPI_HOST || 'api-football-v1.p.rapidapi.com'
-
+const API_HOST = 'allsportsapi2.p.rapidapi.com'
 const BASE_URL = `https://${API_HOST}`
 
 const headers = {
-  'X-RapidAPI-Key': API_KEY,
-  'X-RapidAPI-Host': API_HOST,
+  'Content-Type': 'application/json',
+  'x-rapidapi-key': API_KEY || '',
+  'x-rapidapi-host': API_HOST,
 }
 
-// Fetch upcoming fixtures for supported leagues
-// League IDs: 39=EPL, 235=NPFL, 140=La Liga, 78=Bundesliga, 135=Serie A
-export const SUPPORTED_LEAGUES = [39, 235, 140, 78, 135]
+// Tournament IDs for AllSportsApi
+// 17 = Premier League, 679 = NPFL, 8 = La Liga, 35 = Bundesliga, 23 = Serie A
+export const SUPPORTED_LEAGUES = [17, 8, 35, 23, 679]
 
-export async function fetchUpcomingFixtures(leagueId = 39, season = 2024) {
-  const today = new Date().toISOString().split('T')[0]
-  const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+export const LEAGUE_META = {
+  17:  { name: 'Premier League 🏴󠁧󠁢󠁥󠁮󠁧󠁿', season: 61627 },
+  8:   { name: 'La Liga 🇪🇸',              season: 61643 },
+  35:  { name: 'Bundesliga 🇩🇪',           season: 61734 },
+  23:  { name: 'Serie A 🇮🇹',              season: 61644 },
+  679: { name: 'NPFL 🇳🇬',                season: 63863 },
+}
+
+export async function fetchUpcomingFixtures(tournamentId = 17) {
+  const meta = LEAGUE_META[tournamentId]
+  if (!meta) return []
 
   const res = await fetch(
-    `${BASE_URL}/fixtures?league=${leagueId}&season=${season}&from=${today}&to=${nextWeek}&status=NS`,
+    `${BASE_URL}/api/tournament/${tournamentId}/season/${meta.season}/matches/next/0`,
     { headers }
   )
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
   const data = await res.json()
-  return data.response || []
-}
-
-export async function fetchFixtureResult(fixtureId) {
-  const res = await fetch(`${BASE_URL}/fixtures?id=${fixtureId}`, { headers })
-  const data = await res.json()
-  return data.response?.[0] || null
+  return data.events || []
 }
 
 export function mapFixture(raw) {
   return {
-    id: raw.fixture.id,
-    league_id: raw.league.id,
-    league_name: raw.league.name,
-    home_team: raw.teams.home.name,
-    away_team: raw.teams.away.name,
-    home_logo: raw.teams.home.logo,
-    away_logo: raw.teams.away.logo,
-    kickoff: raw.fixture.date,
-    status: raw.fixture.status.short,
-    home_goals: raw.goals.home,
-    away_goals: raw.goals.away,
+    id: raw.id,
+    league_id: raw.tournament?.uniqueTournament?.id || 0,
+    league_name: raw.tournament?.name || 'Unknown League',
+    home_team: raw.homeTeam?.name || 'Home',
+    away_team: raw.awayTeam?.name || 'Away',
+    home_logo: raw.homeTeam?.id
+      ? `https://api.sofascore.app/api/v1/team/${raw.homeTeam.id}/image`
+      : null,
+    away_logo: raw.awayTeam?.id
+      ? `https://api.sofascore.app/api/v1/team/${raw.awayTeam.id}/image`
+      : null,
+    kickoff: raw.startTimestamp
+      ? new Date(raw.startTimestamp * 1000).toISOString()
+      : new Date().toISOString(),
+    status: raw.status?.type === 'notstarted' ? 'NS' : raw.status?.type || 'NS',
+    home_goals: raw.homeScore?.current ?? null,
+    away_goals: raw.awayScore?.current ?? null,
   }
 }
