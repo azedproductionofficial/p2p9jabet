@@ -26,17 +26,6 @@ export default function Lobby() {
     setLoading(true)
     setErrorMsg('')
 
-    const hasApiKey = import.meta.env.VITE_RAPIDAPI_KEY &&
-      import.meta.env.VITE_RAPIDAPI_KEY !== 'your_rapidapi_key'
-
-    if (!hasApiKey) {
-      setFixtures(getDemoFixtures(activeLeague))
-      setApiMode('demo')
-      setErrorMsg('No API key found in environment variables.')
-      setLoading(false)
-      return
-    }
-
     try {
       console.log('Fetching fixtures for league:', activeLeague)
       const raw = await fetchUpcomingFixtures(activeLeague)
@@ -48,12 +37,10 @@ export default function Lobby() {
         setErrorMsg('API returned 0 fixtures. Showing demo data.')
       } else {
         const mapped = raw.map(mapFixture)
-        console.log('Mapped fixtures:', mapped)
         setFixtures(mapped)
         setApiMode('live')
         setErrorMsg('')
 
-        // Cache in Supabase if connected
         const hasSupabase = import.meta.env.VITE_SUPABASE_URL &&
           !import.meta.env.VITE_SUPABASE_URL.includes('placeholder')
         if (hasSupabase) {
@@ -91,7 +78,6 @@ export default function Lobby() {
     <div style={{ minHeight: 'calc(100vh - 64px)', padding: '40px 0' }}>
       <div className="container">
 
-        {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
           <div>
             <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--accent)', letterSpacing: '3px', marginBottom: '6px' }}>LIVE BETTING LOBBY</p>
@@ -118,14 +104,12 @@ export default function Lobby() {
           </div>
         </div>
 
-        {/* Error message for debugging */}
         {errorMsg && (
           <div style={{ background: 'rgba(255,59,59,0.08)', border: '1px solid rgba(255,59,59,0.2)', borderRadius: '10px', padding: '10px 16px', marginBottom: '20px', fontSize: '0.8rem', color: 'var(--red)', fontFamily: 'var(--font-mono)' }}>
             ⚠ {errorMsg}
           </div>
         )}
 
-        {/* League tabs */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '32px', overflowX: 'auto', paddingBottom: '4px' }}>
           {SUPPORTED_LEAGUES.map(id => (
             <button
@@ -145,7 +129,6 @@ export default function Lobby() {
           ))}
         </div>
 
-        {/* Fixtures grid */}
         {loading ? (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '20px' }}>
             {[1, 2, 3, 4].map(i => (
