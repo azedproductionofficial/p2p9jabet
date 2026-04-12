@@ -1,3 +1,9 @@
+[build]
+  base = "p2p9jabet"
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
