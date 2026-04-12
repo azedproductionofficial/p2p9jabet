@@ -27,9 +27,7 @@ export default function Lobby() {
     setErrorMsg('')
 
     try {
-      console.log('Fetching fixtures for league:', activeLeague)
       const raw = await fetchUpcomingFixtures(activeLeague)
-      console.log('API response:', raw)
 
       if (!raw || raw.length === 0) {
         setFixtures(getDemoFixtures(activeLeague))
@@ -41,14 +39,14 @@ export default function Lobby() {
         setApiMode('live')
         setErrorMsg('')
 
-        const hasSupabase = import.meta.env.VITE_SUPABASE_URL &&
-          !import.meta.env.VITE_SUPABASE_URL.includes('placeholder')
-        if (hasSupabase) {
-          await supabase.from('fixtures').upsert(mapped, { onConflict: 'id' }).catch(() => {})
+        // Cache in Supabase silently
+        try {
+          await supabase.from('fixtures').upsert(mapped, { onConflict: 'id' })
+        } catch (e) {
+          // ignore caching errors
         }
       }
     } catch (err) {
-      console.error('Fixture fetch error:', err)
       setFixtures(getDemoFixtures(activeLeague))
       setApiMode('demo')
       setErrorMsg(`API error: ${err.message}`)
@@ -66,7 +64,7 @@ export default function Lobby() {
         .in('status', ['pending', 'matched'])
       setUserBets(data || [])
     } catch (err) {
-      console.error('Failed to load user bets:', err)
+      // ignore
     }
   }
 
