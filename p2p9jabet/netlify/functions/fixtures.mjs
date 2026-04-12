@@ -3,28 +3,7 @@ export default async (request, context) => {
   const tournamentId = url.searchParams.get('tournamentId') || '17'
   const season = url.searchParams.get('season') || '61627'
 
-  // Try multiple possible env var names
-  const apiKey = process.env.RAPIDAPI_KEY
-    || process.env.VITE_RAPIDAPI_KEY
-    || process.env.rapidapi_key
-    || ''
-
-  // Debug: show what env vars are available (remove after fixing)
-  const debugKeys = Object.keys(process.env).filter(k =>
-    k.toLowerCase().includes('rapid') || k.toLowerCase().includes('api')
-  )
-
-  if (!apiKey) {
-    return new Response(JSON.stringify({
-      error: 'No API key found',
-      availableKeys: debugKeys,
-      events: []
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-
+  const apiKey = '5676065241msh49fdc272225280ep1d817djsnab92ce4ca738'
   const apiUrl = `https://allsportsapi2.p.rapidapi.com/api/tournament/${tournamentId}/season/${season}/matches/next/0`
 
   try {
@@ -43,7 +22,7 @@ export default async (request, context) => {
       data = JSON.parse(text)
     } catch (e) {
       return new Response(JSON.stringify({
-        error: `API returned non-JSON: ${text.substring(0, 200)}`,
+        error: `API returned: ${text.substring(0, 300)}`,
         events: []
       }), {
         status: 500,
