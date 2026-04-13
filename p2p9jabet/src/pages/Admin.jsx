@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import toast from 'react-hot-toast'
 import {
   Users, Wallet, TrendingUp, Shield, Ban, CheckCircle,
-  XCircle, RefreshCw, Plus, Search, ChevronDown, ArrowUpRight
+  XCircle, RefreshCw, Plus, Search, ArrowUpRight, AlertTriangle
 } from 'lucide-react'
 
 const TABS = ['Overview', 'Users', 'Bets', 'Withdrawals', 'Add User']
@@ -21,6 +21,9 @@ export default function Admin() {
   const [search, setSearch] = useState('')
   const [dataLoading, setDataLoading] = useState(true)
 
+  // Confirmation modal
+  const [confirm, setConfirm] = useState(null) // { message, onConfirm }
+
   // New user form
   const [newEmail, setNewEmail] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -32,6 +35,9 @@ export default function Admin() {
   // Fund user
   const [fundUserId, setFundUserId] = useState(null)
   const [fundAmount, setFundAmount] = useState('')
+
+  // Settling lock — prevent double clicks
+  const [settlingBetId, setSettlingBetId] = useState(null)
 
   useEffect(() => {
     if (!loading) {
@@ -53,8 +59,6 @@ export default function Admin() {
       .select('*')
       .order('created_at', { ascending: false })
     setUsers(data || [])
-
-    // Stats
     const totalBalance = (data || []).reduce((sum, u) => sum + (u.wallet_balance || 0), 0)
     setStats(prev => ({ ...prev, totalUsers: data?.length || 0, totalEscrow: totalBalance }))
   }
@@ -65,7 +69,6 @@ export default function Admin() {
       .select('*')
       .order('created_at', { ascending: false })
     setBets(data || [])
-
     const totalStaked = (data || []).reduce((sum, b) => sum + (b.stake || 0), 0)
     const pending = (data || []).filter(b => b.status === 'pending').length
     const matched = (data || []).filter(b => b.status === 'matched').length
@@ -79,7 +82,6 @@ export default function Admin() {
       .eq('type', 'withdrawal')
       .order('created_at', { ascending: false })
     setWithdrawals(data || [])
-
     const pendingAmount = (data || [])
       .filter(t => t.status === 'pending')
       .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0)
@@ -95,7 +97,6 @@ export default function Admin() {
       .update({ wallet_balance: newBalance })
       .eq('id', userId)
     if (error) return toast.error(error.message)
-
     await supabase.from('transactions').insert({
       user_id: userId,
       type: 'deposit',
@@ -104,7 +105,6 @@ export default function Admin() {
       status: 'success',
       description: 'Admin wallet funding',
     })
-
     toast.success(`₦${parseFloat(amount).toLocaleString()} added to ${user.username}`)
     setFundUserId(null)
     setFundAmount('')
@@ -113,9 +113,7 @@ export default function Admin() {
 
   async function suspendUser(userId, isSuspended) {
     const { error } = await supabase
-      .from('profiles')
-      .update({ is_suspended: !isSuspended })
-      .eq('id', userId)
+      .from('profiles').update({ is_suspended: !isSuspended }).eq('id', userId)
     if (error) return toast.error(error.message)
     toast.success(`User ${!isSuspended ? 'suspended' : 'unsuspended'}`)
     loadUsers()
@@ -123,62 +121,98 @@ export default function Admin() {
 
   async function makeAdmin(userId, isAdmin) {
     const { error } = await supabase
-      .from('profiles')
-      .update({ is_admin: !isAdmin })
-      .eq('id', userId)
+      .from('profiles').update({ is_admin: !isAdmin }).eq('id', userId)
     if (error) return toast.error(error.message)
     toast.success(`Admin status ${!isAdmin ? 'granted' : 'revoked'}`)
     loadUsers()
   }
 
   async function settleBet(betId, result) {
-    const bet = bets.find(b => b.id === betId)
-    if (!bet) return
+    if (settlingBetId) return // prevent double click
+    setSettlingBetId(betId)
 
-    const { error } = await supabase
-      .from('bets')
-      .update({ status: result })
-      .eq('id', betId)
-    if (error) return toast.error(error.message)
+    try {
+      const bet = bets.find(b => b.id === betId)
+      if (!bet) return
 
-    if (result === 'won') {
-      const { payout } = { payout: bet.stake * 2 * 0.85 }
-      const user = users.find(u => u.id === bet.user_id)
-      if (user) {
-        await supabase.from('profiles')
-          .update({ wallet_balance: user.wallet_balance + payout })
-          .eq('id', bet.user_id)
-        await supabase.from('transactions').insert({
-          user_id: bet.user_id,
-          type: 'bet_won',
-          amount: payout,
-          reference: `WIN_${betId}`,
-          status: 'success',
-          description: `Bet won - ₦${payout.toLocaleString()} credited`,
-        })
+      // Mark bet as settled
+      const { error: betError } = await supabase
+        .from('bets').update({ status: result }).eq('id', betId)
+      if (betError) throw betError
+
+      // Also settle the matched bet if exists
+      if (bet.matched_bet_id) {
+        const oppositeResult = result === 'won' ? 'lost' : result === 'lost' ? 'won' : result
+        await supabase.from('bets').update({ status: oppositeResult }).eq('id', bet.matched_bet_id)
+
+        // Pay the winner
+        const winnerBetId = result === 'won' ? betId : bet.matched_bet_id
+        const winnerBet = result === 'won' ? bet : bets.find(b => b.id === bet.matched_bet_id)
+
+        if (result !== 'draw' && winnerBet) {
+          const payout = winnerBet.stake * 2 * 0.85
+          const winner = users.find(u => u.id === winnerBet.user_id)
+          if (winner) {
+            await supabase.from('profiles')
+              .update({ wallet_balance: (winner.wallet_balance || 0) + payout })
+              .eq('id', winner.id)
+            await supabase.from('transactions').insert({
+              user_id: winner.id,
+              type: 'bet_won',
+              amount: payout,
+              reference: `WIN_${winnerBetId}_${Date.now()}`,
+              status: 'success',
+              description: `Bet won — ₦${payout.toLocaleString()} credited`,
+            })
+          }
+        }
+
+        // Draw — refund both
+        if (result === 'draw') {
+          const bothBets = [bet, bets.find(b => b.id === bet.matched_bet_id)].filter(Boolean)
+          for (const b of bothBets) {
+            const refund = b.stake * 0.95
+            const u = users.find(u => u.id === b.user_id)
+            if (u) {
+              await supabase.from('profiles')
+                .update({ wallet_balance: (u.wallet_balance || 0) + refund })
+                .eq('id', u.id)
+              await supabase.from('transactions').insert({
+                user_id: u.id,
+                type: 'bet_refunded',
+                amount: refund,
+                reference: `DRAW_${b.id}_${Date.now()}`,
+                status: 'success',
+                description: `Draw refund — ₦${refund.toLocaleString()} returned`,
+              })
+            }
+          }
+        }
+      } else {
+        // Unmatched bet — full refund
+        if (result === 'refunded') {
+          const u = users.find(u => u.id === bet.user_id)
+          if (u) {
+            await supabase.from('profiles')
+              .update({ wallet_balance: (u.wallet_balance || 0) + bet.stake })
+              .eq('id', u.id)
+          }
+        }
       }
-    }
 
-    if (result === 'draw') {
-      const refund = bet.stake * 0.95
-      const user = users.find(u => u.id === bet.user_id)
-      if (user) {
-        await supabase.from('profiles')
-          .update({ wallet_balance: user.wallet_balance + refund })
-          .eq('id', bet.user_id)
-      }
+      toast.success(`✅ Bet settled as ${result.toUpperCase()}. Wallets updated.`)
+      await loadAll()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setSettlingBetId(null)
+      setConfirm(null)
     }
-
-    toast.success(`Bet settled as ${result}`)
-    loadBets()
-    loadUsers()
   }
 
   async function markWithdrawalPaid(txId) {
     const { error } = await supabase
-      .from('transactions')
-      .update({ status: 'success' })
-      .eq('id', txId)
+      .from('transactions').update({ status: 'success' }).eq('id', txId)
     if (error) return toast.error(error.message)
     toast.success('Withdrawal marked as paid')
     loadWithdrawals()
@@ -188,24 +222,16 @@ export default function Admin() {
     if (!newEmail || !newPassword || !newUsername) return toast.error('Fill all fields')
     setCreating(true)
     try {
-      // Create auth user
-      const { data, error } = await supabase.auth.admin
-        ? await supabase.auth.signUp({ email: newEmail, password: newPassword })
-        : await supabase.auth.signUp({ email: newEmail, password: newPassword })
-
+      const { data, error } = await supabase.auth.signUp({ email: newEmail, password: newPassword })
       if (error) throw error
-
       if (data.user) {
-        // Wait a moment for trigger to create profile
         await new Promise(r => setTimeout(r, 1000))
-
         await supabase.from('profiles').update({
           username: newUsername,
           wallet_balance: parseFloat(newBalance) || 0,
           is_admin: newIsAdmin,
         }).eq('id', data.user.id)
-
-        toast.success(`User ${newUsername} created successfully!`)
+        toast.success(`User ${newUsername} created!`)
         setNewEmail(''); setNewPassword(''); setNewUsername(''); setNewBalance('0'); setNewIsAdmin(false)
         loadUsers()
       }
@@ -231,6 +257,25 @@ export default function Admin() {
     <div style={{ minHeight: 'calc(100vh - 64px)', padding: '40px 0' }}>
       <div className="container">
 
+        {/* Confirmation Modal */}
+        {confirm && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(4px)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+            <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '20px', padding: '36px', maxWidth: '400px', width: '100%', textAlign: 'center' }}>
+              <AlertTriangle size={40} color="var(--accent2)" style={{ marginBottom: '16px' }} />
+              <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', letterSpacing: '1px', marginBottom: '12px' }}>ARE YOU SURE?</h2>
+              <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginBottom: '28px', lineHeight: 1.6 }}>{confirm.message}</p>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button onClick={() => setConfirm(null)} style={{ flex: 1, background: 'transparent', border: '1px solid var(--border)', color: 'var(--muted)', padding: '12px', borderRadius: '10px', cursor: 'pointer', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: '0.9rem' }}>
+                  Cancel
+                </button>
+                <button onClick={confirm.onConfirm} style={{ flex: 1, background: 'var(--accent)', color: 'var(--bg)', padding: '12px', borderRadius: '10px', cursor: 'pointer', fontFamily: 'var(--font-body)', fontWeight: 800, fontSize: '0.9rem', border: 'none' }}>
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div style={{ marginBottom: '32px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
@@ -252,33 +297,25 @@ export default function Admin() {
           </button>
         </div>
 
-        {/* OVERVIEW TAB */}
+        {/* OVERVIEW */}
         {tab === 'Overview' && (
-          <div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', marginBottom: '32px' }}>
-              <StatCard label="Total Users" value={stats.totalUsers || 0} icon={<Users size={16} />} />
-              <StatCard label="Total Escrow" value={`₦${(stats.totalEscrow || 0).toLocaleString()}`} icon={<Wallet size={16} />} color="var(--accent)" mono />
-              <StatCard label="Total Staked" value={`₦${(stats.totalStaked || 0).toLocaleString()}`} icon={<TrendingUp size={16} />} color="var(--accent2)" mono />
-              <StatCard label="Pending Bets" value={stats.pendingBets || 0} icon={<RefreshCw size={16} />} color="var(--accent2)" />
-              <StatCard label="Matched Bets" value={stats.matchedBets || 0} icon={<CheckCircle size={16} />} color="var(--accent)" />
-              <StatCard label="Pending Withdrawals" value={`₦${(stats.pendingWithdrawals || 0).toLocaleString()}`} icon={<ArrowUpRight size={16} />} color="var(--red)" mono />
-            </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
+            <StatCard label="Total Users" value={stats.totalUsers || 0} icon={<Users size={16} />} />
+            <StatCard label="Total Escrow" value={`₦${(stats.totalEscrow || 0).toLocaleString()}`} icon={<Wallet size={16} />} color="var(--accent)" mono />
+            <StatCard label="Total Staked" value={`₦${(stats.totalStaked || 0).toLocaleString()}`} icon={<TrendingUp size={16} />} color="var(--accent2)" mono />
+            <StatCard label="Pending Bets" value={stats.pendingBets || 0} icon={<RefreshCw size={16} />} color="var(--accent2)" />
+            <StatCard label="Matched Bets" value={stats.matchedBets || 0} icon={<CheckCircle size={16} />} color="var(--accent)" />
+            <StatCard label="Pending Withdrawals" value={`₦${(stats.pendingWithdrawals || 0).toLocaleString()}`} icon={<ArrowUpRight size={16} />} color="var(--red)" mono />
           </div>
         )}
 
-        {/* USERS TAB */}
+        {/* USERS */}
         {tab === 'Users' && (
           <div>
             <div style={{ position: 'relative', marginBottom: '20px' }}>
               <Search size={14} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
-              <input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search by username or email..."
-                style={{ width: '100%', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '10px', padding: '12px 14px 12px 36px', color: 'var(--text)', fontSize: '0.9rem', fontFamily: 'var(--font-body)' }}
-              />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by username or email..." style={{ width: '100%', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '10px', padding: '12px 14px 12px 36px', color: 'var(--text)', fontSize: '0.9rem', fontFamily: 'var(--font-body)' }} />
             </div>
-
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {filteredUsers.map(u => (
                 <div key={u.id} style={{ background: 'var(--card)', border: `1px solid ${u.is_suspended ? 'rgba(255,59,59,0.3)' : 'var(--border)'}`, borderRadius: '14px', padding: '20px 24px' }}>
@@ -287,31 +324,23 @@ export default function Admin() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
                         <span style={{ fontWeight: 700 }}>{u.username}</span>
                         {u.is_admin && <span style={{ fontSize: '0.7rem', background: 'rgba(0,232,122,0.1)', color: 'var(--accent)', padding: '2px 8px', borderRadius: '100px', border: '1px solid rgba(0,232,122,0.3)' }}>ADMIN</span>}
-                        {u.is_suspended && <span style={{ fontSize: '0.7rem', background: 'rgba(255,59,59,0.1)', color: 'var(--red)', padding: '2px 8px', borderRadius: '100px', border: '1px solid rgba(255,59,59,0.3)' }}>SUSPENDED</span>}
+                        {u.is_suspended && <span style={{ fontSize: '0.7rem', background: 'rgba(255,59,59,0.1)', color: 'var(--red)', padding: '2px 8px', borderRadius: '100px' }}>SUSPENDED</span>}
                       </div>
                       <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '4px' }}>{u.email}</p>
                       <p style={{ fontSize: '0.85rem', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>₦{(u.wallet_balance || 0).toLocaleString('en-NG', { minimumFractionDigits: 2 })}</p>
                     </div>
-
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                      {/* Fund */}
                       {fundUserId === u.id ? (
                         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                          <input
-                            type="number"
-                            value={fundAmount}
-                            onChange={e => setFundAmount(e.target.value)}
-                            placeholder="Amount"
-                            style={{ width: '100px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 10px', color: 'var(--text)', fontSize: '0.85rem', fontFamily: 'var(--font-mono)' }}
-                          />
-                          <AdminBtn onClick={() => fundUser(u.id, fundAmount)} color="var(--accent)" label="Confirm" />
+                          <input type="number" value={fundAmount} onChange={e => setFundAmount(e.target.value)} placeholder="Amount" style={{ width: '100px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 10px', color: 'var(--text)', fontSize: '0.85rem', fontFamily: 'var(--font-mono)' }} />
+                          <AdminBtn onClick={() => setConfirm({ message: `Add ₦${parseFloat(fundAmount || 0).toLocaleString()} to ${u.username}'s wallet?`, onConfirm: () => fundUser(u.id, fundAmount) })} color="var(--accent)" label="Confirm" />
                           <AdminBtn onClick={() => setFundUserId(null)} color="var(--muted)" label="Cancel" />
                         </div>
                       ) : (
                         <AdminBtn onClick={() => { setFundUserId(u.id); setFundAmount('') }} color="var(--accent)" label="Fund" icon={<Plus size={12} />} />
                       )}
-                      <AdminBtn onClick={() => suspendUser(u.id, u.is_suspended)} color={u.is_suspended ? 'var(--accent)' : 'var(--red)'} label={u.is_suspended ? 'Unsuspend' : 'Suspend'} icon={u.is_suspended ? <CheckCircle size={12} /> : <Ban size={12} />} />
-                      <AdminBtn onClick={() => makeAdmin(u.id, u.is_admin)} color="var(--accent2)" label={u.is_admin ? 'Revoke Admin' : 'Make Admin'} icon={<Shield size={12} />} />
+                      <AdminBtn onClick={() => setConfirm({ message: `${u.is_suspended ? 'Unsuspend' : 'Suspend'} ${u.username}?`, onConfirm: () => suspendUser(u.id, u.is_suspended) })} color={u.is_suspended ? 'var(--accent)' : 'var(--red)'} label={u.is_suspended ? 'Unsuspend' : 'Suspend'} icon={u.is_suspended ? <CheckCircle size={12} /> : <Ban size={12} />} />
+                      <AdminBtn onClick={() => setConfirm({ message: `${u.is_admin ? 'Revoke admin from' : 'Grant admin to'} ${u.username}?`, onConfirm: () => makeAdmin(u.id, u.is_admin) })} color="var(--accent2)" label={u.is_admin ? 'Revoke Admin' : 'Make Admin'} icon={<Shield size={12} />} />
                     </div>
                   </div>
                 </div>
@@ -320,33 +349,66 @@ export default function Admin() {
           </div>
         )}
 
-        {/* BETS TAB */}
+        {/* BETS */}
         {tab === 'Bets' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {bets.map(bet => {
               const user = users.find(u => u.id === bet.user_id)
+              const matchedBet = bet.matched_bet_id ? bets.find(b => b.id === bet.matched_bet_id) : null
+              const opponent = matchedBet ? users.find(u => u.id === matchedBet.user_id) : null
+              const isSettling = settlingBetId === bet.id
+              const alreadySettled = !['pending', 'matched'].includes(bet.status)
+
               return (
-                <div key={bet.id} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '14px', padding: '20px 24px', display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'center' }}>
-                  <div>
-                    <p style={{ fontWeight: 700, marginBottom: '4px' }}>{user?.username || 'Unknown'} — <span style={{ color: 'var(--accent)' }}>{bet.prediction?.toUpperCase()}</span></p>
-                    <p style={{ fontSize: '0.8rem', color: 'var(--muted)', fontFamily: 'var(--font-mono)', marginBottom: '4px' }}>Fixture ID: {bet.fixture_id}</p>
-                    <p style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)' }}>₦{(bet.stake || 0).toLocaleString()} · <span style={{ color: statusColor(bet.status) }}>{bet.status}</span></p>
-                  </div>
-                  {['pending', 'matched'].includes(bet.status) && (
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                      <AdminBtn onClick={() => settleBet(bet.id, 'won')} color="var(--accent)" label="Won" />
-                      <AdminBtn onClick={() => settleBet(bet.id, 'lost')} color="var(--red)" label="Lost" />
-                      <AdminBtn onClick={() => settleBet(bet.id, 'draw')} color="var(--accent2)" label="Draw" />
-                      <AdminBtn onClick={() => settleBet(bet.id, 'refunded')} color="var(--muted)" label="Refund" />
+                <div key={bet.id} style={{ background: 'var(--card)', border: `1px solid ${alreadySettled ? 'var(--border)' : 'rgba(0,232,122,0.2)'}`, borderRadius: '14px', padding: '20px 24px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'center' }}>
+                    <div>
+                      <p style={{ fontWeight: 700, marginBottom: '4px' }}>
+                        <span style={{ color: 'var(--accent)' }}>{user?.username || 'Unknown'}</span>
+                        {opponent && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> vs <span style={{ color: 'var(--accent2)', fontWeight: 700 }}>{opponent.username}</span></span>}
+                      </p>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '4px' }}>
+                        {user?.username} picked <strong>{bet.prediction?.toUpperCase()}</strong>
+                        {opponent && <> · {opponent.username} picked <strong>{matchedBet?.prediction?.toUpperCase()}</strong></>}
+                      </p>
+                      <p style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)' }}>
+                        ₦{(bet.stake || 0).toLocaleString()} each · Pool: ₦{((bet.stake || 0) * 2).toLocaleString()} · <span style={{ color: statusColor(bet.status) }}>{bet.status}</span>
+                      </p>
                     </div>
-                  )}
+                    {!alreadySettled && (
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end', opacity: isSettling ? 0.5 : 1 }}>
+                        <AdminBtn
+                          onClick={() => setConfirm({ message: `Declare ${user?.username} WON this bet? ₦${((bet.stake || 0) * 2 * 0.85).toLocaleString()} will be credited to their wallet.`, onConfirm: () => settleBet(bet.id, 'won') })}
+                          color="var(--accent)" label={isSettling ? '...' : `${user?.username?.split(' ')[0]} Won`}
+                        />
+                        {opponent && (
+                          <AdminBtn
+                            onClick={() => setConfirm({ message: `Declare ${opponent?.username} WON this bet? ₦${((bet.stake || 0) * 2 * 0.85).toLocaleString()} will be credited to their wallet.`, onConfirm: () => settleBet(bet.matched_bet_id, 'won') })}
+                            color="var(--accent2)" label={`${opponent?.username?.split(' ')[0]} Won`}
+                          />
+                        )}
+                        <AdminBtn onClick={() => setConfirm({ message: `Declare this bet a DRAW? Both players get 95% of their stake back.`, onConfirm: () => settleBet(bet.id, 'draw') })} color="#00BFFF" label="Draw" />
+                        <AdminBtn onClick={() => setConfirm({ message: `REFUND this bet? Full stake returned to ${user?.username}.`, onConfirm: () => settleBet(bet.id, 'refunded') })} color="var(--muted)" label="Refund" />
+                      </div>
+                    )}
+                    {alreadySettled && (
+                      <span style={{ fontSize: '0.8rem', color: statusColor(bet.status), fontFamily: 'var(--font-mono)', fontWeight: 700, background: 'var(--bg)', padding: '6px 14px', borderRadius: '100px', border: `1px solid ${statusColor(bet.status)}` }}>
+                        {bet.status.toUpperCase()}
+                      </span>
+                    )}
+                  </div>
                 </div>
               )
             })}
+            {bets.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '60px', color: 'var(--muted)' }}>
+                <p style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', letterSpacing: '1px' }}>NO BETS YET</p>
+              </div>
+            )}
           </div>
         )}
 
-        {/* WITHDRAWALS TAB */}
+        {/* WITHDRAWALS */}
         {tab === 'Withdrawals' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {withdrawals.map(tx => {
@@ -359,7 +421,7 @@ export default function Admin() {
                     <p style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)' }}>₦{Math.abs(tx.amount || 0).toLocaleString()} · <span style={{ color: tx.status === 'pending' ? 'var(--accent2)' : 'var(--accent)' }}>{tx.status}</span></p>
                   </div>
                   {tx.status === 'pending' && (
-                    <AdminBtn onClick={() => markWithdrawalPaid(tx.id)} color="var(--accent)" label="Mark Paid" icon={<CheckCircle size={12} />} />
+                    <AdminBtn onClick={() => setConfirm({ message: `Mark ₦${Math.abs(tx.amount).toLocaleString()} withdrawal for ${user?.username} as PAID?`, onConfirm: () => markWithdrawalPaid(tx.id) })} color="var(--accent)" label="Mark Paid" icon={<CheckCircle size={12} />} />
                   )}
                 </div>
               )
@@ -372,7 +434,7 @@ export default function Admin() {
           </div>
         )}
 
-        {/* ADD USER TAB */}
+        {/* ADD USER */}
         {tab === 'Add User' && (
           <div style={{ maxWidth: '500px' }}>
             <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '20px', padding: '36px' }}>
@@ -385,11 +447,7 @@ export default function Admin() {
                 <input type="checkbox" id="isAdmin" checked={newIsAdmin} onChange={e => setNewIsAdmin(e.target.checked)} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
                 <label htmlFor="isAdmin" style={{ fontSize: '0.85rem', color: 'var(--muted)', cursor: 'pointer' }}>Grant admin privileges</label>
               </div>
-              <button
-                onClick={createUser}
-                disabled={creating}
-                style={{ width: '100%', background: creating ? 'var(--muted)' : 'var(--accent)', color: 'var(--bg)', fontWeight: 800, fontSize: '1rem', padding: '14px', borderRadius: '10px', cursor: creating ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-body)' }}
-              >
+              <button onClick={createUser} disabled={creating} style={{ width: '100%', background: creating ? 'var(--muted)' : 'var(--accent)', color: 'var(--bg)', fontWeight: 800, fontSize: '1rem', padding: '14px', borderRadius: '10px', cursor: creating ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-body)' }}>
                 {creating ? 'Creating...' : 'Create User'}
               </button>
             </div>
@@ -434,6 +492,6 @@ function Field({ label, value, onChange, placeholder, type = 'text' }) {
 }
 
 function statusColor(status) {
-  const map = { pending: 'var(--accent2)', matched: '#00BFFF', won: 'var(--accent)', lost: 'var(--red)', draw: 'var(--accent2)', refunded: 'var(--muted)' }
+  const map = { pending: 'var(--accent2)', matched: '#00BFFF', won: 'var(--accent)', lost: 'var(--red)', draw: '#00BFFF', refunded: 'var(--muted)' }
   return map[status] || 'var(--muted)'
 }
