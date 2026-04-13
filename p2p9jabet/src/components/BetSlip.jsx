@@ -33,7 +33,7 @@ export default function BetSlip({ fixture, side, onClose }) {
         .eq('id', profile.id)
       if (walletError) throw walletError
 
-      // Place bet
+      // Place bet as pending first
       const { data: newBet, error: betError } = await supabase
         .from('bets')
         .insert({
@@ -57,11 +57,16 @@ export default function BetSlip({ fixture, side, onClose }) {
         description: `Bet: ${teamLabel} in ${fixture.home_team} vs ${fixture.away_team}`,
       })
 
-      // Try to auto-match with an existing opposite bet of same stake
-      await tryAutoMatch(newBet, stakeNum)
+      // Try to auto-match
+      const matched = await tryAutoMatch(newBet, stakeNum)
 
       await refreshProfile()
-      toast.success(`Bet placed on ${teamLabel}! ₦${stakeNum.toLocaleString()} locked in escrow.`)
+
+      if (matched) {
+        toast.success(`🔥 Matched instantly! Your bet is LIVE.`, { duration: 4000 })
+      } else {
+        toast.success(`Bet placed on ${teamLabel}! ₦${stakeNum.toLocaleString()} locked in escrow. Waiting for opponent.`)
+      }
       onClose()
     } catch (err) {
       toast.error(err.message || 'Failed to place bet')
@@ -71,13 +76,19 @@ export default function BetSlip({ fixture, side, onClose }) {
   }
 
   async function tryAutoMatch(newBet, stakeNum) {
-    const oppositeSide = newBet.prediction === 'home' ? 'away' : newBet.prediction === 'away' ? 'home' : 'draw'
+    // Find opposite prediction with same stake on same fixture
+    const oppositeSide = newBet.prediction === 'home' ? 'away'
+      : newBet.prediction === 'away' ? 'home'
+      : null // draw can only match draw
 
+    const matchPrediction = oppositeSide || 'draw'
+
+    // Don't match draw vs draw — draws match against both home and away
     const { data: matches } = await supabase
       .from('bets')
       .select('*')
       .eq('fixture_id', fixture.id)
-      .eq('prediction', oppositeSide)
+      .eq('prediction', matchPrediction)
       .eq('stake', stakeNum)
       .eq('status', 'pending')
       .neq('user_id', profile.id)
@@ -85,11 +96,22 @@ export default function BetSlip({ fixture, side, onClose }) {
 
     if (matches && matches.length > 0) {
       const match = matches[0]
-      // Pair both bets
-      await supabase.from('bets').update({ status: 'matched', matched_bet_id: newBet.id }).eq('id', match.id)
-      await supabase.from('bets').update({ status: 'matched', matched_bet_id: match.id }).eq('id', newBet.id)
-      toast.success('🔥 Matched instantly! Your bet is live.', { duration: 4000 })
+
+      // Update BOTH bets to matched simultaneously
+      const [res1, res2] = await Promise.all([
+        supabase.from('bets')
+          .update({ status: 'matched', matched_bet_id: newBet.id })
+          .eq('id', match.id),
+        supabase.from('bets')
+          .update({ status: 'matched', matched_bet_id: match.id })
+          .eq('id', newBet.id),
+      ])
+
+      if (res1.error || res2.error) return false
+      return true
     }
+
+    return false
   }
 
   return (
