@@ -102,25 +102,44 @@ export default function Admin() {
     if (settlingBetId) return
     setSettlingBetId(winnerBetId)
     try {
-      const winnerBet = bets.find(b => b.id === winnerBetId)
-      if (!winnerBet) return
+      // ALWAYS check fresh bet status from DB first — prevent double settling
+      const { data: freshBet } = await supabase
+        .from('bets').select('*').eq('id', winnerBetId).single()
 
-      const loserBetId = winnerBet.matched_bet_id
+      if (!freshBet) { toast.error('Bet not found'); return }
+      if (!['pending', 'matched'].includes(freshBet.status)) {
+        toast.error('This bet has already been settled!')
+        await loadAll()
+        return
+      }
 
-      // Settle both bets
+      const loserBetId = freshBet.matched_bet_id
+
+      // Check loser bet status too
+      if (loserBetId) {
+        const { data: freshLoser } = await supabase
+          .from('bets').select('status').eq('id', loserBetId).single()
+        if (freshLoser && !['pending', 'matched'].includes(freshLoser.status)) {
+          toast.error('This bet has already been settled!')
+          await loadAll()
+          return
+        }
+      }
+
+      // Settle both bets atomically
       await supabase.from('bets').update({ status: 'won' }).eq('id', winnerBetId)
       if (loserBetId) await supabase.from('bets').update({ status: 'lost' }).eq('id', loserBetId)
 
       // Fetch FRESH winner balance from DB before crediting
-      const payout = winnerBet.stake * 2 * 0.85
+      const payout = freshBet.stake * 2 * 0.85
       const { data: freshWinner } = await supabase
-        .from('profiles').select('wallet_balance, username').eq('id', winnerBet.user_id).single()
+        .from('profiles').select('wallet_balance, username').eq('id', freshBet.user_id).single()
 
       if (freshWinner) {
         const newBalance = (freshWinner.wallet_balance || 0) + payout
-        await supabase.from('profiles').update({ wallet_balance: newBalance }).eq('id', winnerBet.user_id)
+        await supabase.from('profiles').update({ wallet_balance: newBalance }).eq('id', freshBet.user_id)
         await supabase.from('transactions').insert({
-          user_id: winnerBet.user_id, type: 'bet_won', amount: payout,
+          user_id: freshBet.user_id, type: 'bet_won', amount: payout,
           reference: `WIN_${winnerBetId}_${Date.now()}`, status: 'success',
           description: `Bet won — ₦${payout.toLocaleString()} credited`,
         })
@@ -139,8 +158,14 @@ export default function Admin() {
     if (settlingBetId) return
     setSettlingBetId(betId)
     try {
-      const bet = bets.find(b => b.id === betId)
-      if (!bet) return
+      // Check fresh status from DB
+      const { data: freshCheck } = await supabase.from('bets').select('*').eq('id', betId).single()
+      if (!freshCheck || !['pending', 'matched'].includes(freshCheck.status)) {
+        toast.error('This bet has already been settled!')
+        await loadAll()
+        return
+      }
+      const bet = freshCheck
       const matchedBet = bet.matched_bet_id ? bets.find(b => b.id === bet.matched_bet_id) : null
 
       const bothBets = [bet, matchedBet].filter(Boolean)
