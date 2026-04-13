@@ -146,7 +146,8 @@ export default function Admin() {
         toast.success(`✅ ${freshWinner.username} won! ₦${payout.toLocaleString()} credited.`)
       }
 
-      await loadAll()
+      await loadUsers()
+      await loadBets()
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -184,7 +185,8 @@ export default function Admin() {
         }
       }
       toast.success(`Draw settled. Both players refunded 95%.`)
-      await loadAll()
+      await loadUsers()
+      await loadBets()
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -203,8 +205,9 @@ export default function Admin() {
       if (freshU) {
         await supabase.from('profiles').update({ wallet_balance: (freshU.wallet_balance || 0) + bet.stake }).eq('id', bet.user_id)
       }
-      toast.success(`Refunded ₦${bet.stake.toLocaleString()} to ${u?.username}`)
-      await loadAll()
+      toast.success(`Refunded ₦${bet.stake.toLocaleString()} to ${freshU?.username || 'user'}`)
+      await loadUsers()
+      await loadBets()
     } catch (err) {
       toast.error(err.message)
     } finally {
