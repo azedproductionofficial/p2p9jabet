@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import toast from 'react-hot-toast'
 import {
   Users, Wallet, TrendingUp, Shield, Ban, CheckCircle,
-  XCircle, RefreshCw, Plus, Search, ArrowUpRight, AlertTriangle
+  RefreshCw, Plus, Search, ArrowUpRight, AlertTriangle
 } from 'lucide-react'
 
 const TABS = ['Overview', 'Users', 'Bets', 'Withdrawals', 'Add User']
@@ -20,9 +20,8 @@ export default function Admin() {
   const [stats, setStats] = useState({})
   const [search, setSearch] = useState('')
   const [dataLoading, setDataLoading] = useState(true)
-
-  // Confirmation modal
-  const [confirm, setConfirm] = useState(null) // { message, onConfirm }
+  const [confirm, setConfirm] = useState(null)
+  const [settlingBetId, setSettlingBetId] = useState(null)
 
   // New user form
   const [newEmail, setNewEmail] = useState('')
@@ -35,9 +34,6 @@ export default function Admin() {
   // Fund user
   const [fundUserId, setFundUserId] = useState(null)
   const [fundAmount, setFundAmount] = useState('')
-
-  // Settling lock — prevent double clicks
-  const [settlingBetId, setSettlingBetId] = useState(null)
 
   useEffect(() => {
     if (!loading) {
@@ -54,20 +50,14 @@ export default function Admin() {
   }
 
   async function loadUsers() {
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const { data } = await supabase.from('profiles').select('*').order('created_at', { ascending: false })
     setUsers(data || [])
     const totalBalance = (data || []).reduce((sum, u) => sum + (u.wallet_balance || 0), 0)
     setStats(prev => ({ ...prev, totalUsers: data?.length || 0, totalEscrow: totalBalance }))
   }
 
   async function loadBets() {
-    const { data } = await supabase
-      .from('bets')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const { data } = await supabase.from('bets').select('*').order('created_at', { ascending: false })
     setBets(data || [])
     const totalStaked = (data || []).reduce((sum, b) => sum + (b.stake || 0), 0)
     const pending = (data || []).filter(b => b.status === 'pending').length
@@ -76,146 +66,131 @@ export default function Admin() {
   }
 
   async function loadWithdrawals() {
-    const { data } = await supabase
-      .from('transactions')
-      .select('*')
-      .eq('type', 'withdrawal')
-      .order('created_at', { ascending: false })
+    const { data } = await supabase.from('transactions').select('*').eq('type', 'withdrawal').order('created_at', { ascending: false })
     setWithdrawals(data || [])
-    const pendingAmount = (data || [])
-      .filter(t => t.status === 'pending')
-      .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0)
+    const pendingAmount = (data || []).filter(t => t.status === 'pending').reduce((sum, t) => sum + Math.abs(t.amount || 0), 0)
     setStats(prev => ({ ...prev, pendingWithdrawals: pendingAmount }))
   }
 
   async function fundUser(userId, amount) {
     const user = users.find(u => u.id === userId)
     if (!user) return
-    const newBalance = (user.wallet_balance || 0) + parseFloat(amount)
-    const { error } = await supabase
-      .from('profiles')
-      .update({ wallet_balance: newBalance })
-      .eq('id', userId)
+    const newBal = (user.wallet_balance || 0) + parseFloat(amount)
+    const { error } = await supabase.from('profiles').update({ wallet_balance: newBal }).eq('id', userId)
     if (error) return toast.error(error.message)
     await supabase.from('transactions').insert({
-      user_id: userId,
-      type: 'deposit',
-      amount: parseFloat(amount),
-      reference: `ADMIN_FUND_${Date.now()}`,
-      status: 'success',
-      description: 'Admin wallet funding',
+      user_id: userId, type: 'deposit', amount: parseFloat(amount),
+      reference: `ADMIN_FUND_${Date.now()}`, status: 'success', description: 'Admin wallet funding',
     })
     toast.success(`₦${parseFloat(amount).toLocaleString()} added to ${user.username}`)
-    setFundUserId(null)
-    setFundAmount('')
-    loadUsers()
+    setFundUserId(null); setFundAmount(''); loadUsers()
   }
 
   async function suspendUser(userId, isSuspended) {
-    const { error } = await supabase
-      .from('profiles').update({ is_suspended: !isSuspended }).eq('id', userId)
+    const { error } = await supabase.from('profiles').update({ is_suspended: !isSuspended }).eq('id', userId)
     if (error) return toast.error(error.message)
-    toast.success(`User ${!isSuspended ? 'suspended' : 'unsuspended'}`)
-    loadUsers()
+    toast.success(`User ${!isSuspended ? 'suspended' : 'unsuspended'}`); loadUsers()
   }
 
   async function makeAdmin(userId, isAdmin) {
-    const { error } = await supabase
-      .from('profiles').update({ is_admin: !isAdmin }).eq('id', userId)
+    const { error } = await supabase.from('profiles').update({ is_admin: !isAdmin }).eq('id', userId)
     if (error) return toast.error(error.message)
-    toast.success(`Admin status ${!isAdmin ? 'granted' : 'revoked'}`)
-    loadUsers()
+    toast.success(`Admin status ${!isAdmin ? 'granted' : 'revoked'}`); loadUsers()
   }
 
-  async function settleBet(betId, result) {
-    if (settlingBetId) return // prevent double click
-    setSettlingBetId(betId)
-
+  async function settleBet(winnerBetId) {
+    if (settlingBetId) return
+    setSettlingBetId(winnerBetId)
     try {
-      const bet = bets.find(b => b.id === betId)
-      if (!bet) return
+      const winnerBet = bets.find(b => b.id === winnerBetId)
+      if (!winnerBet) return
 
-      // Mark bet as settled
-      const { error: betError } = await supabase
-        .from('bets').update({ status: result }).eq('id', betId)
-      if (betError) throw betError
+      const loserBetId = winnerBet.matched_bet_id
 
-      // Also settle the matched bet if exists
-      if (bet.matched_bet_id) {
-        const oppositeResult = result === 'won' ? 'lost' : result === 'lost' ? 'won' : result
-        await supabase.from('bets').update({ status: oppositeResult }).eq('id', bet.matched_bet_id)
+      // Settle both bets
+      await supabase.from('bets').update({ status: 'won' }).eq('id', winnerBetId)
+      if (loserBetId) await supabase.from('bets').update({ status: 'lost' }).eq('id', loserBetId)
 
-        // Pay the winner
-        const winnerBetId = result === 'won' ? betId : bet.matched_bet_id
-        const winnerBet = result === 'won' ? bet : bets.find(b => b.id === bet.matched_bet_id)
+      // Fetch FRESH winner balance from DB before crediting
+      const payout = winnerBet.stake * 2 * 0.85
+      const { data: freshWinner } = await supabase
+        .from('profiles').select('wallet_balance, username').eq('id', winnerBet.user_id).single()
 
-        if (result !== 'draw' && winnerBet) {
-          const payout = winnerBet.stake * 2 * 0.85
-          const winner = users.find(u => u.id === winnerBet.user_id)
-          if (winner) {
-            await supabase.from('profiles')
-              .update({ wallet_balance: (winner.wallet_balance || 0) + payout })
-              .eq('id', winner.id)
-            await supabase.from('transactions').insert({
-              user_id: winner.id,
-              type: 'bet_won',
-              amount: payout,
-              reference: `WIN_${winnerBetId}_${Date.now()}`,
-              status: 'success',
-              description: `Bet won — ₦${payout.toLocaleString()} credited`,
-            })
-          }
-        }
-
-        // Draw — refund both
-        if (result === 'draw') {
-          const bothBets = [bet, bets.find(b => b.id === bet.matched_bet_id)].filter(Boolean)
-          for (const b of bothBets) {
-            const refund = b.stake * 0.95
-            const u = users.find(u => u.id === b.user_id)
-            if (u) {
-              await supabase.from('profiles')
-                .update({ wallet_balance: (u.wallet_balance || 0) + refund })
-                .eq('id', u.id)
-              await supabase.from('transactions').insert({
-                user_id: u.id,
-                type: 'bet_refunded',
-                amount: refund,
-                reference: `DRAW_${b.id}_${Date.now()}`,
-                status: 'success',
-                description: `Draw refund — ₦${refund.toLocaleString()} returned`,
-              })
-            }
-          }
-        }
-      } else {
-        // Unmatched bet — full refund
-        if (result === 'refunded') {
-          const u = users.find(u => u.id === bet.user_id)
-          if (u) {
-            await supabase.from('profiles')
-              .update({ wallet_balance: (u.wallet_balance || 0) + bet.stake })
-              .eq('id', u.id)
-          }
-        }
+      if (freshWinner) {
+        const newBalance = (freshWinner.wallet_balance || 0) + payout
+        await supabase.from('profiles').update({ wallet_balance: newBalance }).eq('id', winnerBet.user_id)
+        await supabase.from('transactions').insert({
+          user_id: winnerBet.user_id, type: 'bet_won', amount: payout,
+          reference: `WIN_${winnerBetId}_${Date.now()}`, status: 'success',
+          description: `Bet won — ₦${payout.toLocaleString()} credited`,
+        })
+        toast.success(`✅ ${freshWinner.username} won! ₦${payout.toLocaleString()} credited.`)
       }
 
-      toast.success(`✅ Bet settled as ${result.toUpperCase()}. Wallets updated.`)
       await loadAll()
     } catch (err) {
       toast.error(err.message)
     } finally {
-      setSettlingBetId(null)
-      setConfirm(null)
+      setSettlingBetId(null); setConfirm(null)
+    }
+  }
+
+  async function settleDraw(betId) {
+    if (settlingBetId) return
+    setSettlingBetId(betId)
+    try {
+      const bet = bets.find(b => b.id === betId)
+      if (!bet) return
+      const matchedBet = bet.matched_bet_id ? bets.find(b => b.id === bet.matched_bet_id) : null
+
+      const bothBets = [bet, matchedBet].filter(Boolean)
+      for (const b of bothBets) {
+        await supabase.from('bets').update({ status: 'draw' }).eq('id', b.id)
+        const refund = b.stake * 0.95
+        const { data: freshU } = await supabase.from('profiles').select('wallet_balance').eq('id', b.user_id).single()
+        if (freshU) {
+          const newBal = (freshU.wallet_balance || 0) + refund
+          await supabase.from('profiles').update({ wallet_balance: newBal }).eq('id', b.user_id)
+          await supabase.from('transactions').insert({
+            user_id: b.user_id, type: 'bet_refunded', amount: refund,
+            reference: `DRAW_${b.id}_${Date.now()}`, status: 'success',
+            description: `Draw refund — ₦${refund.toLocaleString()} returned`,
+          })
+        }
+      }
+      toast.success(`Draw settled. Both players refunded 95%.`)
+      await loadAll()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setSettlingBetId(null); setConfirm(null)
+    }
+  }
+
+  async function settleRefund(betId) {
+    if (settlingBetId) return
+    setSettlingBetId(betId)
+    try {
+      const bet = bets.find(b => b.id === betId)
+      if (!bet) return
+      await supabase.from('bets').update({ status: 'refunded' }).eq('id', betId)
+      const { data: freshU } = await supabase.from('profiles').select('wallet_balance').eq('id', bet.user_id).single()
+      if (freshU) {
+        await supabase.from('profiles').update({ wallet_balance: (freshU.wallet_balance || 0) + bet.stake }).eq('id', bet.user_id)
+      }
+      toast.success(`Refunded ₦${bet.stake.toLocaleString()} to ${u?.username}`)
+      await loadAll()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setSettlingBetId(null); setConfirm(null)
     }
   }
 
   async function markWithdrawalPaid(txId) {
-    const { error } = await supabase
-      .from('transactions').update({ status: 'success' }).eq('id', txId)
+    const { error } = await supabase.from('transactions').update({ status: 'success' }).eq('id', txId)
     if (error) return toast.error(error.message)
-    toast.success('Withdrawal marked as paid')
-    loadWithdrawals()
+    toast.success('Withdrawal marked as paid'); loadWithdrawals()
   }
 
   async function createUser() {
@@ -226,21 +201,21 @@ export default function Admin() {
       if (error) throw error
       if (data.user) {
         await new Promise(r => setTimeout(r, 1000))
-        await supabase.from('profiles').update({
-          username: newUsername,
-          wallet_balance: parseFloat(newBalance) || 0,
-          is_admin: newIsAdmin,
-        }).eq('id', data.user.id)
+        await supabase.from('profiles').update({ username: newUsername, wallet_balance: parseFloat(newBalance) || 0, is_admin: newIsAdmin }).eq('id', data.user.id)
         toast.success(`User ${newUsername} created!`)
         setNewEmail(''); setNewPassword(''); setNewUsername(''); setNewBalance('0'); setNewIsAdmin(false)
         loadUsers()
       }
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      setCreating(false)
-    }
+    } catch (err) { toast.error(err.message) }
+    finally { setCreating(false) }
   }
+
+  // Only show one side of each matched pair to avoid duplicates
+  const displayBets = bets.filter(bet => {
+    if (!bet.matched_bet_id) return true // unmatched, show it
+    // For matched pairs, only show the one where this bet's id < matched_bet_id (show once)
+    return bet.id < bet.matched_bet_id
+  })
 
   const filteredUsers = users.filter(u =>
     u.username?.toLowerCase().includes(search.toLowerCase()) ||
@@ -248,9 +223,7 @@ export default function Admin() {
   )
 
   if (loading || dataLoading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--accent)', fontFamily: 'var(--font-display)', fontSize: '2rem', letterSpacing: '2px' }}>
-      LOADING ADMIN...
-    </div>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--accent)', fontFamily: 'var(--font-display)', fontSize: '2rem', letterSpacing: '2px' }}>LOADING ADMIN...</div>
   )
 
   return (
@@ -265,12 +238,8 @@ export default function Admin() {
               <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', letterSpacing: '1px', marginBottom: '12px' }}>ARE YOU SURE?</h2>
               <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginBottom: '28px', lineHeight: 1.6 }}>{confirm.message}</p>
               <div style={{ display: 'flex', gap: '12px' }}>
-                <button onClick={() => setConfirm(null)} style={{ flex: 1, background: 'transparent', border: '1px solid var(--border)', color: 'var(--muted)', padding: '12px', borderRadius: '10px', cursor: 'pointer', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: '0.9rem' }}>
-                  Cancel
-                </button>
-                <button onClick={confirm.onConfirm} style={{ flex: 1, background: 'var(--accent)', color: 'var(--bg)', padding: '12px', borderRadius: '10px', cursor: 'pointer', fontFamily: 'var(--font-body)', fontWeight: 800, fontSize: '0.9rem', border: 'none' }}>
-                  Confirm
-                </button>
+                <button onClick={() => setConfirm(null)} style={{ flex: 1, background: 'transparent', border: '1px solid var(--border)', color: 'var(--muted)', padding: '12px', borderRadius: '10px', cursor: 'pointer', fontFamily: 'var(--font-body)', fontWeight: 700 }}>Cancel</button>
+                <button onClick={confirm.onConfirm} style={{ flex: 1, background: 'var(--accent)', color: 'var(--bg)', padding: '12px', borderRadius: '10px', cursor: 'pointer', fontFamily: 'var(--font-body)', fontWeight: 800, border: 'none' }}>Confirm</button>
               </div>
             </div>
           </div>
@@ -288,9 +257,7 @@ export default function Admin() {
         {/* Tabs */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '32px', flexWrap: 'wrap' }}>
           {TABS.map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{ background: tab === t ? 'var(--accent)' : 'var(--card)', color: tab === t ? 'var(--bg)' : 'var(--muted)', border: `1px solid ${tab === t ? 'var(--accent)' : 'var(--border)'}`, padding: '8px 20px', borderRadius: '100px', fontSize: '0.85rem', fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-body)', transition: 'all 0.2s' }}>
-              {t}
-            </button>
+            <button key={t} onClick={() => setTab(t)} style={{ background: tab === t ? 'var(--accent)' : 'var(--card)', color: tab === t ? 'var(--bg)' : 'var(--muted)', border: `1px solid ${tab === t ? 'var(--accent)' : 'var(--border)'}`, padding: '8px 20px', borderRadius: '100px', fontSize: '0.85rem', fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-body)', transition: 'all 0.2s' }}>{t}</button>
           ))}
           <button onClick={loadAll} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--muted)', padding: '8px 14px', borderRadius: '100px', fontSize: '0.85rem', cursor: 'pointer', fontFamily: 'var(--font-body)' }}>
             <RefreshCw size={13} /> Refresh
@@ -352,47 +319,56 @@ export default function Admin() {
         {/* BETS */}
         {tab === 'Bets' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {bets.map(bet => {
+            {displayBets.map(bet => {
               const user = users.find(u => u.id === bet.user_id)
               const matchedBet = bet.matched_bet_id ? bets.find(b => b.id === bet.matched_bet_id) : null
               const opponent = matchedBet ? users.find(u => u.id === matchedBet.user_id) : null
-              const isSettling = settlingBetId === bet.id
+              const isSettling = settlingBetId === bet.id || settlingBetId === bet.matched_bet_id
               const alreadySettled = !['pending', 'matched'].includes(bet.status)
 
               return (
                 <div key={bet.id} style={{ background: 'var(--card)', border: `1px solid ${alreadySettled ? 'var(--border)' : 'rgba(0,232,122,0.2)'}`, borderRadius: '14px', padding: '20px 24px' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'center' }}>
                     <div>
-                      <p style={{ fontWeight: 700, marginBottom: '4px' }}>
+                      <p style={{ fontWeight: 700, marginBottom: '4px', fontSize: '1rem' }}>
                         <span style={{ color: 'var(--accent)' }}>{user?.username || 'Unknown'}</span>
                         {opponent && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> vs <span style={{ color: 'var(--accent2)', fontWeight: 700 }}>{opponent.username}</span></span>}
                       </p>
                       <p style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '4px' }}>
-                        {user?.username} picked <strong>{bet.prediction?.toUpperCase()}</strong>
-                        {opponent && <> · {opponent.username} picked <strong>{matchedBet?.prediction?.toUpperCase()}</strong></>}
+                        {user?.username} → <strong>{bet.prediction?.toUpperCase()}</strong>
+                        {opponent && <> · {opponent.username} → <strong>{matchedBet?.prediction?.toUpperCase()}</strong></>}
                       </p>
                       <p style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)' }}>
                         ₦{(bet.stake || 0).toLocaleString()} each · Pool: ₦{((bet.stake || 0) * 2).toLocaleString()} · <span style={{ color: statusColor(bet.status) }}>{bet.status}</span>
                       </p>
                     </div>
-                    {!alreadySettled && (
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end', opacity: isSettling ? 0.5 : 1 }}>
+
+                    {/* Actions — only show if not settled */}
+                    {!alreadySettled && !isSettling && (
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                         <AdminBtn
-                          onClick={() => setConfirm({ message: `Declare ${user?.username} WON this bet? ₦${((bet.stake || 0) * 2 * 0.85).toLocaleString()} will be credited to their wallet.`, onConfirm: () => settleBet(bet.id, 'won') })}
-                          color="var(--accent)" label={isSettling ? '...' : `${user?.username?.split(' ')[0]} Won`}
+                          onClick={() => setConfirm({ message: `Declare ${user?.username} WON? ₦${((bet.stake || 0) * 2 * 0.85).toLocaleString()} will be credited to their wallet.`, onConfirm: () => settleBet(bet.id) })}
+                          color="var(--accent)" label={`${user?.username?.split(' ')[0]} Won`}
                         />
                         {opponent && (
                           <AdminBtn
-                            onClick={() => setConfirm({ message: `Declare ${opponent?.username} WON this bet? ₦${((bet.stake || 0) * 2 * 0.85).toLocaleString()} will be credited to their wallet.`, onConfirm: () => settleBet(bet.matched_bet_id, 'won') })}
+                            onClick={() => setConfirm({ message: `Declare ${opponent?.username} WON? ₦${((bet.stake || 0) * 2 * 0.85).toLocaleString()} will be credited to their wallet.`, onConfirm: () => settleBet(matchedBet.id) })}
                             color="var(--accent2)" label={`${opponent?.username?.split(' ')[0]} Won`}
                           />
                         )}
-                        <AdminBtn onClick={() => setConfirm({ message: `Declare this bet a DRAW? Both players get 95% of their stake back.`, onConfirm: () => settleBet(bet.id, 'draw') })} color="#00BFFF" label="Draw" />
-                        <AdminBtn onClick={() => setConfirm({ message: `REFUND this bet? Full stake returned to ${user?.username}.`, onConfirm: () => settleBet(bet.id, 'refunded') })} color="var(--muted)" label="Refund" />
+                        <AdminBtn onClick={() => setConfirm({ message: `Declare DRAW? Both players get 95% of ₦${(bet.stake || 0).toLocaleString()} back.`, onConfirm: () => settleDraw(bet.id) })} color="#00BFFF" label="Draw" />
+                        <AdminBtn onClick={() => setConfirm({ message: `Refund ₦${(bet.stake || 0).toLocaleString()} to ${user?.username}?`, onConfirm: () => settleRefund(bet.id) })} color="var(--muted)" label="Refund" />
                       </div>
                     )}
+
+                    {/* Settling spinner */}
+                    {isSettling && (
+                      <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>Settling...</span>
+                    )}
+
+                    {/* Already settled badge */}
                     {alreadySettled && (
-                      <span style={{ fontSize: '0.8rem', color: statusColor(bet.status), fontFamily: 'var(--font-mono)', fontWeight: 700, background: 'var(--bg)', padding: '6px 14px', borderRadius: '100px', border: `1px solid ${statusColor(bet.status)}` }}>
+                      <span style={{ fontSize: '0.8rem', color: statusColor(bet.status), fontFamily: 'var(--font-mono)', fontWeight: 700, background: 'var(--bg)', padding: '6px 14px', borderRadius: '100px', border: `1px solid ${statusColor(bet.status)}`, whiteSpace: 'nowrap' }}>
                         {bet.status.toUpperCase()}
                       </span>
                     )}
@@ -400,7 +376,7 @@ export default function Admin() {
                 </div>
               )
             })}
-            {bets.length === 0 && (
+            {displayBets.length === 0 && (
               <div style={{ textAlign: 'center', padding: '60px', color: 'var(--muted)' }}>
                 <p style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', letterSpacing: '1px' }}>NO BETS YET</p>
               </div>
