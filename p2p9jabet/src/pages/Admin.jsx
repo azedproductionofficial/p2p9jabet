@@ -102,33 +102,26 @@ export default function Admin() {
     if (settlingBetId) return
     setSettlingBetId(winnerBetId)
     try {
-      // ALWAYS check fresh bet status from DB first — prevent double settling
-      const { data: freshBet } = await supabase
-        .from('bets').select('*').eq('id', winnerBetId).single()
+      // Atomically update ONLY if status is still matched/pending — prevents race condition
+      const { data: updatedBets, error: updateError } = await supabase
+        .from('bets')
+        .update({ status: 'won' })
+        .eq('id', winnerBetId)
+        .in('status', ['pending', 'matched'])
+        .select()
 
-      if (!freshBet) { toast.error('Bet not found'); return }
-      if (!['pending', 'matched'].includes(freshBet.status)) {
+      if (updateError || !updatedBets || updatedBets.length === 0) {
         toast.error('This bet has already been settled!')
-        await loadAll()
+        await loadUsers(); await loadBets()
         return
       }
 
+      const freshBet = updatedBets[0]
       const loserBetId = freshBet.matched_bet_id
-
-      // Check loser bet status too
       if (loserBetId) {
-        const { data: freshLoser } = await supabase
-          .from('bets').select('status').eq('id', loserBetId).single()
-        if (freshLoser && !['pending', 'matched'].includes(freshLoser.status)) {
-          toast.error('This bet has already been settled!')
-          await loadAll()
-          return
-        }
+        await supabase.from('bets').update({ status: 'lost' })
+          .eq('id', loserBetId).in('status', ['pending', 'matched'])
       }
-
-      // Settle both bets atomically
-      await supabase.from('bets').update({ status: 'won' }).eq('id', winnerBetId)
-      if (loserBetId) await supabase.from('bets').update({ status: 'lost' }).eq('id', loserBetId)
 
       // Fetch FRESH winner balance from DB before crediting
       const payout = freshBet.stake * 2 * 0.85
