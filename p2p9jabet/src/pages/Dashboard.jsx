@@ -7,7 +7,7 @@ import { Trophy, Clock, XCircle, RefreshCw, Swords, TrendingUp } from 'lucide-re
 const STATUS_CONFIG = {
   pending:  { label: 'Waiting for Match', color: 'var(--accent2)', bg: 'rgba(255,214,0,0.1)', icon: <Clock size={13} /> },
   matched:  { label: 'Matched — Live', color: '#00BFFF', bg: 'rgba(0,191,255,0.1)', icon: <Swords size={13} /> },
-  won:      { label: 'Won', color: 'var(--accent)', bg: 'rgba(0,232,122,0.1)', icon: <Trophy size={13} /> },
+  won:      { label: 'Won ✅', color: 'var(--accent)', bg: 'rgba(0,232,122,0.1)', icon: <Trophy size={13} /> },
   lost:     { label: 'Lost', color: 'var(--red)', bg: 'rgba(255,59,59,0.1)', icon: <XCircle size={13} /> },
   draw:     { label: 'Draw', color: 'var(--accent2)', bg: 'rgba(255,214,0,0.1)', icon: <RefreshCw size={13} /> },
   refunded: { label: 'Refunded', color: 'var(--muted)', bg: 'rgba(90,106,130,0.1)', icon: <RefreshCw size={13} /> },
@@ -33,7 +33,6 @@ export default function Dashboard() {
       .order('created_at', { ascending: false })
     setBets(data || [])
 
-    // Load fixture info for all bet fixture_ids
     if (data?.length) {
       const ids = [...new Set(data.map(b => b.fixture_id))]
       const { data: fixtureData } = await supabase.from('fixtures').select('*').in('id', ids)
@@ -54,6 +53,26 @@ export default function Dashboard() {
     totalStaked: bets.reduce((sum, b) => sum + b.stake, 0),
   }
 
+  function getFixtureName(bet) {
+    const fx = fixtures[bet.fixture_id]
+    if (fx) return `${fx.home_team} vs ${fx.away_team}`
+    // Fallback for demo fixtures
+    const demoNames = {
+      1001: 'Arsenal vs Manchester City',
+      1002: 'Liverpool vs Chelsea',
+      1003: 'Manchester Utd vs Tottenham',
+      1004: 'Aston Villa vs Newcastle',
+    }
+    return demoNames[bet.fixture_id] || `Match #${bet.fixture_id}`
+  }
+
+  function getPredictionLabel(bet) {
+    const fx = fixtures[bet.fixture_id]
+    if (bet.prediction === 'draw') return 'Draw'
+    if (fx) return bet.prediction === 'home' ? fx.home_team : fx.away_team
+    return bet.prediction?.toUpperCase()
+  }
+
   return (
     <div style={{ minHeight: 'calc(100vh - 64px)', padding: '40px 0' }}>
       <div className="container">
@@ -63,7 +82,7 @@ export default function Dashboard() {
           <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(2rem, 5vw, 3rem)', letterSpacing: '2px' }}>BET HISTORY</h1>
         </div>
 
-        {/* Stats row */}
+        {/* Stats */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '36px' }}>
           <StatCard label="Total Bets" value={stats.total} icon={<Swords size={16} />} />
           <StatCard label="Wins" value={stats.won} icon={<Trophy size={16} />} color="var(--accent)" />
@@ -79,6 +98,9 @@ export default function Dashboard() {
               {f}
             </button>
           ))}
+          <button onClick={loadBets} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--muted)', padding: '6px 16px', borderRadius: '100px', fontSize: '0.8rem', cursor: 'pointer', fontFamily: 'var(--font-body)' }}>
+            <RefreshCw size={13} /> Refresh
+          </button>
         </div>
 
         {/* Bets list */}
@@ -92,18 +114,13 @@ export default function Dashboard() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {filtered.map(bet => {
-              const fx = fixtures[bet.fixture_id]
               const cfg = STATUS_CONFIG[bet.status] || STATUS_CONFIG.pending
-              const teamLabel = bet.prediction === 'home' ? fx?.home_team : bet.prediction === 'away' ? fx?.away_team : 'Draw'
-
               return (
-                <div key={bet.id} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '14px', padding: '20px 24px', display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'center' }} className="fade-in">
+                <div key={bet.id} style={{ background: 'var(--card)', border: `1px solid ${bet.status === 'won' ? 'rgba(0,232,122,0.3)' : bet.status === 'lost' ? 'rgba(255,59,59,0.2)' : 'var(--border)'}`, borderRadius: '14px', padding: '20px 24px', display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'center' }} className="fade-in">
                   <div>
-                    <p style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: '4px' }}>
-                      {fx ? `${fx.home_team} vs ${fx.away_team}` : `Fixture #${bet.fixture_id}`}
-                    </p>
+                    <p style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: '4px' }}>{getFixtureName(bet)}</p>
                     <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--accent)', fontWeight: 700 }}>Backed: {teamLabel}</span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--accent)', fontWeight: 700 }}>Backed: {getPredictionLabel(bet)}</span>
                       <span style={{ fontSize: '0.75rem', color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>
                         {format(new Date(bet.created_at), 'dd MMM yyyy · HH:mm')}
                       </span>
@@ -111,7 +128,7 @@ export default function Dashboard() {
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1rem', fontWeight: 700 }}>₦{bet.stake.toLocaleString()}</span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', color: cfg.color, background: cfg.bg, padding: '3px 10px', borderRadius: '100px', fontWeight: 600 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', color: cfg.color, background: cfg.bg, padding: '3px 10px', borderRadius: '100px', fontWeight: 600, border: `1px solid ${cfg.color}33` }}>
                       {cfg.icon} {cfg.label}
                     </span>
                   </div>
